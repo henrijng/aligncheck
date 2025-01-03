@@ -5,7 +5,7 @@ A Streamlit application for checking new leads against existing HubSpot deals an
 ## Features
 
 - Direct processing of HubSpot Excel exports
-- **Extended** fuzzy domain and company name matching
+- **Extended** fuzzy domain and company name matching (via `fuzzywuzzy`)
 - **Multiple** possible company columns recognized
 - **Email local-part** check for duplicates
 - Support for large files
