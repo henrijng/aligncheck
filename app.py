@@ -54,6 +54,26 @@ def are_companies_similar(comp1, comp2, threshold=85):
         return False
     return fuzz.ratio(norm1, norm2) >= threshold
 
+def validate_lead(lead):
+    """Validate if a lead should be included based on business rules"""
+    required_fields = {
+        'email': ['E-Mail-Adresse', 'Email', 'E-Mail'],
+        'company': ['Firma/Organisation', 'Company', 'Firma'],
+        'name': ['Vorname', 'First Name', 'First']
+    }
+    
+    # Check for required fields
+    for field_type, possible_columns in required_fields.items():
+        has_field = False
+        for col in possible_columns:
+            if col in lead and pd.notna(lead[col]) and str(lead[col]).strip():
+                has_field = True
+                break
+        if not has_field:
+            return False
+    
+    return True
+
 def fix_column_names(df):
     """Clean and standardize column names"""
     if df is None:
@@ -132,6 +152,43 @@ def process_csv(uploaded_file):
                 return None
     return None
 
+def clean_output_data(df):
+    """Clean and prepare output data"""
+    if df.empty:
+        return df
+        
+    # List of columns to keep (add or modify based on your needs)
+    columns_to_keep = [
+        'Vorname', 'Nachname', 'E-Mail-Adresse', 'Firma/Organisation',
+        'First Name', 'Last Name', 'Email', 'Company',
+        'Reason'  # Keep reason column for existing leads
+    ]
+    
+    # Keep only columns that exist in the DataFrame
+    columns = [col for col in columns_to_keep if col in df.columns]
+    
+    # Select columns and remove duplicates
+    cleaned_df = df[columns].drop_duplicates()
+    
+    return cleaned_df
+
+def save_to_excel(df, filename):
+    """Save DataFrame to Excel with proper formatting"""
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+        
+        # Auto-adjust columns width
+        worksheet = writer.sheets['Sheet1']
+        for idx, col in enumerate(df.columns):
+            max_length = max(
+                df[col].astype(str).apply(len).max(),
+                len(str(col))
+            ) + 2
+            worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
+    
+    return buffer.getvalue()
+
 def check_leads(deals_df, alignment_df, new_leads_df):
     """Check leads against existing deals and alignments"""
     if deals_df is None or alignment_df is None or new_leads_df is None:
@@ -174,6 +231,7 @@ def check_leads(deals_df, alignment_df, new_leads_df):
         progress = (idx + 1) / total_leads
         progress_bar.progress(progress)
         
+        # Extract email and company
         email = ''
         for email_col in ['E-Mail-Adresse', 'Email', 'E-Mail']:
             if email_col in lead and pd.notna(lead[email_col]):
@@ -189,16 +247,19 @@ def check_leads(deals_df, alignment_df, new_leads_df):
         match_found = False
         reason = []
 
+        # Check if contact is already in deals
         if email in existing_emails:
             match_found = True
             reason.append('Email exists in deals')
 
+        # Check company domain
         if not match_found and email:
             lead_domain = extract_domain(email)
             if lead_domain and lead_domain in existing_domains:
                 match_found = True
                 reason.append('Company domain exists')
 
+        # Check similar company names
         if not match_found and company:
             for existing_company in existing_companies:
                 if are_companies_similar(company, existing_company):
@@ -206,6 +267,12 @@ def check_leads(deals_df, alignment_df, new_leads_df):
                     reason.append(f'Similar company exists: {existing_company}')
                     break
 
+        # Check if lead is valid
+        if not validate_lead(lead):
+            match_found = True
+            reason.append('Missing required information')
+
+        # Add lead to appropriate list
         lead_dict = lead.to_dict()
         if match_found:
             lead_dict['Reason'] = ' & '.join(reason)
@@ -215,10 +282,11 @@ def check_leads(deals_df, alignment_df, new_leads_df):
 
     progress_bar.empty()
 
-    return (
-        pd.DataFrame(new_leads) if new_leads else pd.DataFrame(),
-        pd.DataFrame(existing_leads) if existing_leads else pd.DataFrame()
-    )
+    # Create DataFrames and clean them
+    new_leads_df = pd.DataFrame(new_leads) if new_leads else pd.DataFrame()
+    existing_leads_df = pd.DataFrame(existing_leads) if existing_leads else pd.DataFrame()
+    
+    return new_leads_df, existing_leads_df
 
 # Streamlit UI
 st.title("HubSpot Leads Checker")
@@ -245,9 +313,8 @@ with col1:
             deals_df = process_excel(deals_file)
             if deals_df is not None:
                 st.success(f"✓ Loaded {len(deals_df)} deals")
-                if len(deals_df.columns) > 0:
-                    with st.expander("View loaded columns", expanded=False):
-                        st.info("\n".join(deals_df.columns))
+                with st.expander("View loaded columns", expanded=False):
+                    st.info("\n".join(deals_df.columns))
 
 with col2:
     st.subheader("2. Deal Alignment")
@@ -259,9 +326,8 @@ with col2:
             alignment_df = process_excel(alignment_file)
             if alignment_df is not None:
                 st.success(f"✓ Loaded {len(alignment_df)} alignments")
-                if len(alignment_df.columns) > 0:
-                    with st.expander("View loaded columns", expanded=False):
-                        st.info("\n".join(alignment_df.columns))
+                with st.expander("View loaded columns", expanded=False):
+                    st.info("\n".join(alignment_df.columns))
 
 with col3:
     st.subheader("3. New Leads")
@@ -276,9 +342,8 @@ with col3:
                 leads_df = process_csv(leads_file)
             if leads_df is not None:
                 st.success(f"✓ Loaded {len(leads_df)} leads")
-                if len(leads_df.columns) > 0:
-                    with st.expander("View loaded columns", expanded=False):
-                        st.info("\n".join(leads_df.columns))
+                with st.expander("View loaded columns", expanded=False):
+                    st.info("\n".join(leads_df.columns))
 
 if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file and leads_file)):
     with st.spinner("Processing leads..."):
@@ -289,17 +354,16 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
         with tab1:
             st.subheader(f"New Leads ({len(new_leads_df)})")
             if not new_leads_df.empty:
-                st.dataframe(new_leads_df)
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                # Clean and prepare data for display
+                display_df = clean_output_data(new_leads_df)
+                st.dataframe(display_df)
                 
-                # Convert to Excel file for download
-                buffer = BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    new_leads_df.to_excel(writer, index=False)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                excel_data = save_to_excel(display_df, f"new_leads_{timestamp}.xlsx")
                 
                 st.download_button(
                     label="📥 Download New Leads Excel",
-                    data=buffer.getvalue(),
+                    data=excel_data,
                     file_name=f"new_leads_{timestamp}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
@@ -307,17 +371,16 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
         with tab2:
             st.subheader(f"Existing Leads ({len(existing_leads_df)})")
             if not existing_leads_df.empty:
-                st.dataframe(existing_leads_df)
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                # Clean and prepare data for display
+                display_df = clean_output_data(existing_leads_df)
+                st.dataframe(display_df)
                 
-                # Convert to Excel file for download
-                buffer = BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    existing_leads_df.to_excel(writer, index=False)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                excel_data = save_to_excel(display_df, f"existing_leads_{timestamp}.xlsx")
                 
                 st.download_button(
                     label="📥 Download Existing Leads Excel",
-                    data=buffer.getvalue(),
+                    data=excel_data,
                     file_name=f"existing_leads_{timestamp}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
