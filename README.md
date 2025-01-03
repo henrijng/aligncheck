@@ -4,30 +4,29 @@ A Streamlit application for checking new leads against existing HubSpot deals an
 
 ## Features
 
-- Direct processing of HubSpot Excel exports
-- **Extended** fuzzy domain and company name matching (via `fuzzywuzzy`)
-- **Multiple** possible company columns recognized
-- **Email local-part** check for duplicates
-- Support for large files
-- Separate download for new, existing, and double-check leads
+- Direct processing of HubSpot Excel exports  
+- Smart email domain matching  
+- Fuzzy company name matching  
+- Support for large files  
+- Separate download for new and existing leads  
 
 ## Required Files
 
-### HubSpot Deals Excel (alle deals.xlsx)
-- Export directly from HubSpot (must contain columns **Associated Contact** and **Associated Company**)
+### HubSpot Deals Excel (alle deals.xlsx):
+- Export directly from HubSpot
 
-### Deal Alignment Excel (deal alignment check.xlsx)
-- Export directly from HubSpot (must contain columns **Unternehmensname** and **Domain-Name des Unternehmens**)
+### Deal Alignment Excel (deal alignment check.xlsx):
+- Export directly from HubSpot
 
-### New Leads (Excel)
-- Should include:
-  - Email address (e.g. `E-Mail-Adresse`, `Email`, `E-Mail`)
-  - One or more Company columns (e.g. `Firma/Organisation`, `Company`, `Alt Company`, etc.)
-  - First name / Last name (optional but recommended)
+### New Leads (Excel or CSV):
+- Must contain:  
+  - Email address  
+  - Company name  
+  - First name  
+  - Last name  
 
 ## Setup
 
-1. Clone the repository.
-2. Install the requirements:
+1. Install requirements:
    ```bash
    pip install -r requirements.txt
