@@ -1,27 +1,25 @@
 # HubSpot Leads Checker
 
-A Streamlit application for checking new leads against existing HubSpot deals and company alignments.
-
-## Features
-- Direct processing of HubSpot Excel exports
-- Email domain matching
-- Company and contact verification
-- Support for large files
-- Three-way classification: New, Existing, and Double Check
-
 ## Required Files
-### HubSpot Deals Excel (alle deals.xlsx):
-- Associated Contact (Name and Email)
-- Associated Company
 
-### Deal Alignment Excel (deal alignment check.xlsx):
-- Domain-Name des Unternehmens
-- Unternehmensname
+### 1. HubSpot Deals (XLSX export)
+- Export "alle deals" list as XLSX from HubSpot
+- Must contain:
+  - Associated Contact
+  - Associated Company
 
-### New Leads Excel:
-- Email address
-- Company name
-- Contact details
+### 2. Deal Alignment (XLSX export)
+- Export "Deal Alignment" list as XLSX from HubSpot
+- Must contain:
+  - Domain-Name des Unternehmens
+  - Unternehmensname
+
+### 3. New Leads (XLSX)
+Required columns:
+- Vorname
+- Nachname
+- Email
+- Unternehmen
 
 ## Setup
 1. Install requirements:
