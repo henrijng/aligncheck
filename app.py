@@ -130,9 +130,9 @@ def save_to_excel(df, filename):
     return buffer.getvalue()
 
 # ---------------------------------------------------------------------------------
-# Erweiterte check_leads-Funktion:
+# check_leads-Funktion ohne python-Levenshtein:
 # 1. Mehrere mögliche Firmen-Spalten
-# 2. Fuzzy Matching bei Firmenname
+# 2. Fuzzy Matching nur mit fuzzywuzzy
 # 3. Fuzzy Matching der Email-Domain
 # 4. Prüfung auf Duplicate Email Names (local-part)
 # ---------------------------------------------------------------------------------
@@ -294,7 +294,6 @@ def check_leads(deals_df, alignment_df, new_leads_df):
                 break  # wir brauchen nur 1 exakten Treffer
             
             # (2) Fuzzy Check: 
-            # Wir schauen, ob es eine ~hohe Übereinstimmung zu einer existierenden Firma gibt.
             best_score = 0
             best_match_firm = ""
             for existing_company in known_companies:
@@ -310,26 +309,15 @@ def check_leads(deals_df, alignment_df, new_leads_df):
                 )
                 break  # High Score reicht uns, wir sind sicher
             elif best_score >= MID_COMPANY_THRESHOLD:
-                # Nur wenn wir KEINEN High Score vorher gefunden haben
-                # => double check
                 company_double_check = True
                 reasons_company.append(
                     f'Firma ähnlich (Fuzzy {best_score}%) -> "{best_match_firm}"'
                 )
-            # Falls wir mehrere company_cols haben, gucken wir alle durch.
-            # Möglicherweise kommt später ein HIGH_SCORE -> break nicht vergessen.
+            # Falls weitere company_cols vorhanden sind, prüfen wir sie ebenfalls,
+            # bis wir ggf. einen High Score finden.
 
         # ---------------------------------------------------------
-        # Endgültige Einordnung:
-        #
-        # Wir betrachten jetzt alle Teil-Checks:
-        # 1) email_name_match_found? => existing
-        # 2) domain_match_found? => existing
-        # 3) domain_double_check? => double_check
-        # 4) company_match_found? => existing
-        # 5) company_double_check? => double_check
-        #
-        # "Neue Leads" nur, wenn nichts existiert und kein double_check
+        # Endgültige Einordnung
         # ---------------------------------------------------------
         lead_dict = lead.to_dict()
         reasons = []
@@ -349,9 +337,9 @@ def check_leads(deals_df, alignment_df, new_leads_df):
             )
 
         # Company
-        reasons += reasons_company  # falls wir Texte aus dem Fuzzy-Vergleich haben
+        reasons += reasons_company
 
-        # Sammeln, ob existing oder double_check
+        # Prüfen, ob existing oder double_check
         if email_name_match_found or domain_match_found or company_match_found:
             lead_dict['Reason'] = " & ".join(reasons)
             existing_leads.append(lead_dict)
@@ -367,7 +355,6 @@ def check_leads(deals_df, alignment_df, new_leads_df):
 
     progress_bar.empty()
 
-    # DataFrames zurückgeben
     return (
         pd.DataFrame(new_leads) if new_leads else pd.DataFrame(),
         pd.DataFrame(existing_leads) if existing_leads else pd.DataFrame(),
