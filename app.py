@@ -5,6 +5,7 @@ from datetime import datetime
 import tldextract
 from fuzzywuzzy import fuzz
 import re
+from io import BytesIO
 
 # Page configuration
 st.set_page_config(
@@ -291,15 +292,14 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
                 st.dataframe(new_leads_df)
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 
-                # Save as Excel
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                # Convert to Excel file for download
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     new_leads_df.to_excel(writer, index=False)
-                excel_data = output.getvalue()
                 
                 st.download_button(
                     label="📥 Download New Leads Excel",
-                    data=excel_data,
+                    data=buffer.getvalue(),
                     file_name=f"new_leads_{timestamp}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
@@ -310,15 +310,14 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
                 st.dataframe(existing_leads_df)
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 
-                # Save as Excel
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                # Convert to Excel file for download
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     existing_leads_df.to_excel(writer, index=False)
-                excel_data = output.getvalue()
                 
                 st.download_button(
                     label="📥 Download Existing Leads Excel",
-                    data=excel_data,
+                    data=buffer.getvalue(),
                     file_name=f"existing_leads_{timestamp}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
