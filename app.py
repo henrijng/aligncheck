@@ -17,9 +17,9 @@ st.set_page_config(
 def is_file_empty(file):
     """Check if the uploaded file is empty"""
     pos = file.tell()
-    file.seek(0, 2)  # Seek to end of file
+    file.seek(0, 2)
     size = file.tell()
-    file.seek(pos)  # Seek back to original position
+    file.seek(pos)
     return size == 0
 
 def extract_domain(email):
@@ -44,35 +44,24 @@ def normalize_company_name(name):
         normalized = normalized.replace(suffix, '')
     return normalized.strip()
 
-def are_companies_similar(comp1, comp2, threshold=85):
-    """Check if two company names are similar using fuzzy matching"""
-    if pd.isna(comp1) or pd.isna(comp2):
-        return False
-    norm1 = normalize_company_name(comp1)
-    norm2 = normalize_company_name(comp2)
-    if not norm1 or not norm2:
-        return False
-    return fuzz.ratio(norm1, norm2) >= threshold
+def extract_email_from_text(text):
+    """Extract email from text string"""
+    if pd.isna(text) or not isinstance(text, str):
+        return ''
+    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+    return email_match.group(0) if email_match else ''
 
 def fix_column_names(df):
     """Clean and standardize column names"""
     if df is None:
         return None
     
-    # Handle both series and list of column names
-    if isinstance(df.columns, pd.Index):
-        columns = df.columns.tolist()
-    else:
-        columns = list(df.columns)
+    columns = df.columns if isinstance(df.columns, pd.Index) else list(df.columns)
     
-    # Clean each column name
     clean_columns = []
     for col in columns:
-        # Remove BOM characters and clean column names
         col = str(col).replace('\ufeff', '')
-        # Remove quotes
         col = col.strip('"').strip("'")
-        # Remove leading/trailing whitespace
         col = col.strip()
         clean_columns.append(col)
     
@@ -83,19 +72,13 @@ def process_excel(uploaded_file):
     """Process uploaded Excel file with HubSpot format handling"""
     if uploaded_file is not None:
         try:
-            # Read Excel file
             df = pd.read_excel(
                 uploaded_file,
                 engine='openpyxl',
                 dtype=str
             )
-            
-            # Fix column names
             df = fix_column_names(df)
-            
-            # Remove empty rows and columns
             df = df.dropna(how='all').dropna(axis=1, how='all')
-            
             return df
             
         except Exception as e:
@@ -105,51 +88,24 @@ def process_excel(uploaded_file):
             return None
     return None
 
-def process_csv(uploaded_file):
-    """Process uploaded CSV file"""
-    if uploaded_file is not None:
-        try:
-            df = pd.read_csv(
-                uploaded_file,
-                encoding='utf-8',
-                dtype=str,
-                on_bad_lines='skip'
-            )
-            df = fix_column_names(df)
-            return df
-        except UnicodeDecodeError:
-            try:
-                df = pd.read_csv(
-                    uploaded_file,
-                    encoding='cp1252',
-                    dtype=str,
-                    on_bad_lines='skip'
-                )
-                df = fix_column_names(df)
-                return df
-            except Exception as e:
-                st.error(f"Error reading CSV file. Please check the file format.")
-                return None
-    return None
-
 def clean_output_data(df):
-    """Clean and prepare output data"""
+    """Clean and prepare output data focusing on relevant columns"""
     if df.empty:
         return df
-        
-    # List of columns to keep (add or modify based on your needs)
-    columns_to_keep = [
+    
+    primary_columns = [
         'Vorname', 'Nachname', 'E-Mail-Adresse', 'Firma/Organisation',
-        'First Name', 'Last Name', 'Email', 'Company', 'Position',
-        'Stellenbezeichnung', 'Website', 'Domain', 'Reason'
+        'First Name', 'Last Name', 'Email', 'Company',
+        'Associated Contact', 'Associated Company',  # HubSpot specific columns
+        'Domain-Name des Unternehmens',  # Alignment check column
+        'Reason'  # Match reason
     ]
     
-    # Keep only columns that exist in the DataFrame
-    columns = [col for col in columns_to_keep if col in df.columns]
+    columns = [col for col in primary_columns if col in df.columns]
+    if not columns:
+        columns = df.columns.tolist()
     
-    # Select columns and remove duplicates
     cleaned_df = df[columns].drop_duplicates()
-    
     return cleaned_df
 
 def save_to_excel(df, filename):
@@ -157,8 +113,6 @@ def save_to_excel(df, filename):
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
-        
-        # Auto-adjust columns width
         worksheet = writer.sheets['Sheet1']
         for idx, col in enumerate(df.columns):
             max_length = max(
@@ -170,36 +124,48 @@ def save_to_excel(df, filename):
     return buffer.getvalue()
 
 def check_leads(deals_df, alignment_df, new_leads_df):
-    """Check leads against existing deals and alignments"""
+    """Check leads against existing deals and alignments using specific columns"""
     if deals_df is None or alignment_df is None or new_leads_df is None:
         return None, None
 
-    # Create sets for lookups with proper column names
+    # Extract existing emails and domains from deals
     existing_emails = set()
-    email_columns = ['Email', 'Associated Email', 'E-Mail', 'E-Mail-Adresse']
-    for col in email_columns:
-        if col in deals_df.columns:
-            existing_emails.update(deals_df[col].dropna().apply(lambda x: x.lower().strip()))
+    existing_contact_names = set()
+    existing_companies = set()
 
-    # Handle company names from both files
-    existing_companies = []
-    company_columns = ['Associated Company', 'Company', 'Unternehmensname']
-    
-    for df in [deals_df, alignment_df]:
-        for col in company_columns:
-            if col in df.columns:
-                existing_companies.extend(df[col].dropna().tolist())
+    # Process deals data
+    if 'Associated Contact' in deals_df.columns:
+        # Extract emails from Associated Contact field
+        deals_df['Extracted Email'] = deals_df['Associated Contact'].apply(extract_email_from_text)
+        existing_emails.update(
+            deals_df['Extracted Email']
+            .dropna()
+            .apply(lambda x: x.lower().strip())
+        )
+        
+        # Extract names from Associated Contact field
+        existing_contact_names.update(
+            deals_df['Associated Contact']
+            .dropna()
+            .apply(lambda x: str(x).lower().strip())
+        )
 
-    # Handle domains from alignment file
+    # Get existing companies from deals
+    if 'Associated Company' in deals_df.columns:
+        existing_companies.update(
+            deals_df['Associated Company']
+            .dropna()
+            .apply(normalize_company_name)
+        )
+
+    # Get domains from alignment check
     existing_domains = set()
-    domain_columns = ['Domain-Name des Unternehmens', 'Website', 'Domain']
-    for col in domain_columns:
-        if col in alignment_df.columns:
-            existing_domains.update(
-                alignment_df[col]
-                .dropna()
-                .apply(extract_domain)
-            )
+    if 'Domain-Name des Unternehmens' in alignment_df.columns:
+        existing_domains.update(
+            alignment_df['Domain-Name des Unternehmens']
+            .dropna()
+            .apply(lambda x: extract_domain(str(x)))
+        )
 
     new_leads = []
     existing_leads = []
@@ -211,54 +177,71 @@ def check_leads(deals_df, alignment_df, new_leads_df):
         progress = (idx + 1) / total_leads
         progress_bar.progress(progress)
         
-        # Extract email and company
-        email = ''
+        # Get lead details
+        lead_email = ''
         for email_col in ['E-Mail-Adresse', 'Email', 'E-Mail']:
             if email_col in lead and pd.notna(lead[email_col]):
-                email = lead[email_col].lower().strip()
+                lead_email = lead[email_col].lower().strip()
                 break
 
-        company = ''
+        lead_name = ''
+        for name_cols in [['Vorname', 'Nachname'], ['First Name', 'Last Name']]:
+            if all(col in lead for col in name_cols):
+                parts = [str(lead[col]).strip() for col in name_cols if pd.notna(lead[col])]
+                lead_name = ' '.join(parts).lower()
+                break
+
+        lead_company = ''
         for company_col in ['Firma/Organisation', 'Company', 'Firma']:
             if company_col in lead and pd.notna(lead[company_col]):
-                company = lead[company_col]
+                lead_company = normalize_company_name(str(lead[company_col]))
                 break
 
         match_found = False
-        reason = []
+        reasons = []
 
-        # Check if contact is already in deals
-        if email in existing_emails:
-            match_found = True
-            reason.append('Email exists in deals')
-
-        # Check company domain
-        if not match_found and email:
-            lead_domain = extract_domain(email)
-            if lead_domain and lead_domain in existing_domains:
+        # Email check
+        if lead_email:
+            if lead_email in existing_emails:
                 match_found = True
-                reason.append('Company domain exists')
-
-        # Check similar company names
-        if not match_found and company:
-            for existing_company in existing_companies:
-                if are_companies_similar(company, existing_company):
+                reasons.append('Email exists in deals')
+            else:
+                lead_domain = extract_domain(lead_email)
+                if lead_domain and lead_domain in existing_domains:
                     match_found = True
-                    reason.append(f'Similar company exists: {existing_company}')
+                    reasons.append('Company domain exists in alignment check')
+
+        # Name check
+        if lead_name and lead_name in existing_contact_names:
+            match_found = True
+            reasons.append('Contact name exists in deals')
+
+        # Company check
+        if lead_company and lead_company in existing_companies:
+            match_found = True
+            reasons.append('Company exists in deals')
+        elif lead_company:
+            # Check for similar company names
+            for existing_company in existing_companies:
+                if are_companies_similar(lead_company, existing_company, threshold=85):
+                    match_found = True
+                    reasons.append(f'Similar company exists: {existing_company}')
                     break
 
         lead_dict = lead.to_dict()
         if match_found:
-            lead_dict['Reason'] = ' & '.join(reason)
+            lead_dict['Reason'] = ' & '.join(reasons)
             existing_leads.append(lead_dict)
         else:
             new_leads.append(lead_dict)
 
     progress_bar.empty()
-    return (
-        pd.DataFrame(new_leads) if new_leads else pd.DataFrame(),
-        pd.DataFrame(existing_leads) if existing_leads else pd.DataFrame()
-    )
+
+    # Create DataFrames from results
+    new_leads_df = pd.DataFrame(new_leads) if new_leads else pd.DataFrame()
+    existing_leads_df = pd.DataFrame(existing_leads) if existing_leads else pd.DataFrame()
+
+    return new_leads_df, existing_leads_df
 
 # Streamlit UI
 st.title("HubSpot Leads Checker")
@@ -266,9 +249,9 @@ st.markdown("---")
 
 with st.expander("📋 Instructions", expanded=False):
     st.markdown("""
-    1. Export and upload your HubSpot Deals Excel file (alle deals.xlsx)
-    2. Export and upload your Deal Alignment Excel file (deal alignment check.xlsx)
-    3. Upload your New Leads file (Excel or CSV)
+    1. Export and upload HubSpot Deals Excel file (containing Associated Contact and Company)
+    2. Export and upload Deal Alignment Excel file (containing Domain-Name des Unternehmens)
+    3. Upload your New Leads file
     4. Click Process to analyze the data
     5. Download the filtered results
     """)
@@ -277,7 +260,7 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
     st.subheader("1. HubSpot Deals")
-    deals_file = st.file_uploader("Upload HubSpot Deals export (alle deals.xlsx)", type=['xlsx'])
+    deals_file = st.file_uploader("Upload HubSpot Deals export", type=['xlsx'])
     if deals_file:
         if is_file_empty(deals_file):
             st.error("The uploaded file is empty")
@@ -290,7 +273,7 @@ with col1:
 
 with col2:
     st.subheader("2. Deal Alignment")
-    alignment_file = st.file_uploader("Upload Deal Alignment export (deal alignment check.xlsx)", type=['xlsx'])
+    alignment_file = st.file_uploader("Upload Deal Alignment export", type=['xlsx'])
     if alignment_file:
         if is_file_empty(alignment_file):
             st.error("The uploaded file is empty")
@@ -303,15 +286,12 @@ with col2:
 
 with col3:
     st.subheader("3. New Leads")
-    leads_file = st.file_uploader("Upload new leads file", type=['xlsx', 'csv'])
+    leads_file = st.file_uploader("Upload new leads file", type=['xlsx'])
     if leads_file:
         if is_file_empty(leads_file):
             st.error("The uploaded file is empty")
         else:
-            if leads_file.name.endswith('.xlsx'):
-                leads_df = process_excel(leads_file)
-            else:
-                leads_df = process_csv(leads_file)
+            leads_df = process_excel(leads_file)
             if leads_df is not None:
                 st.success(f"✓ Loaded {len(leads_df)} leads")
                 with st.expander("View loaded columns", expanded=False):
@@ -326,7 +306,6 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
         with tab1:
             st.subheader(f"New Leads ({len(new_leads_df)})")
             if not new_leads_df.empty:
-                # Clean and prepare data for display
                 display_df = clean_output_data(new_leads_df)
                 st.dataframe(display_df)
                 
@@ -343,7 +322,6 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
         with tab2:
             st.subheader(f"Existing Leads ({len(existing_leads_df)})")
             if not existing_leads_df.empty:
-                # Clean and prepare data for display
                 display_df = clean_output_data(existing_leads_df)
                 st.dataframe(display_df)
                 
