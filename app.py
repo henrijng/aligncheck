@@ -13,32 +13,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-def fix_string_encoding(s):
-    """Fix potential encoding issues in string"""
-    if isinstance(s, str):
-        try:
-            return s.encode('latin1').decode('utf-8')
-        except (UnicodeEncodeError, UnicodeDecodeError):
-            return s
-    return s
-
-# Debug helper
-def peek_file(file):
-    """Debug helper to peek at file contents"""
-    try:
-        pos = file.tell()
-        content = file.read(1000).decode('utf-8')
-        file.seek(pos)
-        return content
-    except:
-        try:
-            file.seek(pos)
-            content = file.read(1000).decode('cp1252')
-            file.seek(pos)
-            return content
-        except:
-            return "Could not read file content"
-
 def is_file_empty(file):
     """Check if the uploaded file is empty"""
     pos = file.tell()
@@ -80,7 +54,7 @@ def are_companies_similar(comp1, comp2, threshold=85):
     return fuzz.ratio(norm1, norm2) >= threshold
 
 def fix_column_names(df):
-    """Clean and standardize column names from HubSpot export"""
+    """Clean and standardize column names"""
     if df is None:
         return None
     
@@ -93,66 +67,59 @@ def fix_column_names(df):
     # Clean each column name
     clean_columns = []
     for col in columns:
-        col = str(col).replace('\ufeff', '')  # Remove BOM
-        col = col.strip('"').strip("'")  # Remove quotes
-        col = col.strip()  # Remove whitespace
-        col = fix_string_encoding(col)  # Fix encoding
+        # Remove BOM characters and clean column names
+        col = str(col).replace('\ufeff', '')
+        # Remove quotes
+        col = col.strip('"').strip("'")
+        # Remove leading/trailing whitespace
+        col = col.strip()
         clean_columns.append(col)
     
     df.columns = clean_columns
     return df
 
-def process_csv(uploaded_file):
-    """Process uploaded CSV with HubSpot format handling"""
+def process_excel(uploaded_file):
+    """Process uploaded Excel file with HubSpot format handling"""
     if uploaded_file is not None:
         try:
-            # Read the first line to check the format
-            uploaded_file.seek(0)
-            first_line = uploaded_file.readline().decode('utf-8')
-            uploaded_file.seek(0)
+            # Read Excel file
+            df = pd.read_excel(
+                uploaded_file,
+                engine='openpyxl',
+                dtype=str
+            )
+            
+            # Fix column names
+            df = fix_column_names(df)
+            
+            # Remove empty rows and columns
+            df = df.dropna(how='all').dropna(axis=1, how='all')
+            
+            return df
+            
+        except Exception as e:
+            st.error(f"Error reading file: Please ensure it's a valid HubSpot Excel export.")
+            with st.expander("Error Details"):
+                st.error(str(e))
+            return None
+    return None
 
-            # Check if it's the special format with comma-separated columns in a single column
-            if '"' in first_line and ',' in first_line and ';' in first_line:
-                df = pd.read_csv(
-                    uploaded_file,
-                    sep=';',
-                    encoding='utf-8',
-                    dtype=str,
-                    on_bad_lines='skip'
-                )
-                # If we got a single column with comma-separated values
-                if len(df.columns) == 1:
-                    # Split the column name into separate columns
-                    column_names = df.columns[0].split(',')
-                    column_names = [col.strip('"').strip() for col in column_names]
-                    # Create new DataFrame with the correct columns
-                    new_df = pd.DataFrame(columns=column_names)
-                    # Add the data
-                    if len(df) > 0:
-                        for idx, row in df.iterrows():
-                            values = row[0].split(',')
-                            values = [v.strip('"').strip() for v in values]
-                            if len(values) == len(column_names):
-                                new_df.loc[idx] = values
-                    df = new_df
-            else:
-                # Regular CSV processing
-                df = pd.read_csv(
-                    uploaded_file,
-                    encoding='utf-8',
-                    dtype=str,
-                    on_bad_lines='skip'
-                )
-
+def process_csv(uploaded_file):
+    """Process uploaded CSV file"""
+    if uploaded_file is not None:
+        try:
+            df = pd.read_csv(
+                uploaded_file,
+                encoding='utf-8',
+                dtype=str,
+                on_bad_lines='skip'
+            )
             df = fix_column_names(df)
             return df
-
         except UnicodeDecodeError:
             try:
-                uploaded_file.seek(0)
                 df = pd.read_csv(
                     uploaded_file,
-                    sep=';',
                     encoding='cp1252',
                     dtype=str,
                     on_bad_lines='skip'
@@ -160,12 +127,12 @@ def process_csv(uploaded_file):
                 df = fix_column_names(df)
                 return df
             except Exception as e:
-                st.error(f"Error reading file: The file format is not as expected. Please ensure it's a valid HubSpot export.")
+                st.error(f"Error reading CSV file. Please check the file format.")
                 return None
     return None
 
 def check_leads(deals_df, alignment_df, new_leads_df):
-    """Enhanced lead checking for HubSpot export formats"""
+    """Check leads against existing deals and alignments"""
     if deals_df is None or alignment_df is None or new_leads_df is None:
         return None, None
 
@@ -258,9 +225,9 @@ st.markdown("---")
 
 with st.expander("📋 Instructions", expanded=False):
     st.markdown("""
-    1. Export and upload your HubSpot Deals CSV file (no modifications needed)
-    2. Export and upload your Deal Alignment CSV file (no modifications needed)
-    3. Upload your New Leads CSV file
+    1. Export and upload your HubSpot Deals Excel file (alle deals.xlsx)
+    2. Export and upload your Deal Alignment Excel file (deal alignment check.xlsx)
+    3. Upload your New Leads file (Excel or CSV)
     4. Click Process to analyze the data
     5. Download the filtered results
     """)
@@ -269,54 +236,48 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
     st.subheader("1. HubSpot Deals")
-    deals_file = st.file_uploader("Upload HubSpot Deals export", type=['csv'])
+    deals_file = st.file_uploader("Upload HubSpot Deals export (alle deals.xlsx)", type=['xlsx'])
     if deals_file:
         if is_file_empty(deals_file):
             st.error("The uploaded file is empty")
         else:
-            with st.expander("Debug Info", expanded=False):
-                st.text("File Preview:")
-                st.code(peek_file(deals_file))
-            
-            deals_df = process_csv(deals_file)
+            deals_df = process_excel(deals_file)
             if deals_df is not None:
                 st.success(f"✓ Loaded {len(deals_df)} deals")
                 if len(deals_df.columns) > 0:
-                    st.info("Loaded columns: " + ", ".join(deals_df.columns))
+                    with st.expander("View loaded columns", expanded=False):
+                        st.info("\n".join(deals_df.columns))
 
 with col2:
     st.subheader("2. Deal Alignment")
-    alignment_file = st.file_uploader("Upload Deal Alignment export", type=['csv'])
+    alignment_file = st.file_uploader("Upload Deal Alignment export (deal alignment check.xlsx)", type=['xlsx'])
     if alignment_file:
         if is_file_empty(alignment_file):
             st.error("The uploaded file is empty")
         else:
-            with st.expander("Debug Info", expanded=False):
-                st.text("File Preview:")
-                st.code(peek_file(alignment_file))
-            
-            alignment_df = process_csv(alignment_file)
+            alignment_df = process_excel(alignment_file)
             if alignment_df is not None:
                 st.success(f"✓ Loaded {len(alignment_df)} alignments")
                 if len(alignment_df.columns) > 0:
-                    st.info("Loaded columns: " + ", ".join(alignment_df.columns))
+                    with st.expander("View loaded columns", expanded=False):
+                        st.info("\n".join(alignment_df.columns))
 
 with col3:
     st.subheader("3. New Leads")
-    leads_file = st.file_uploader("Upload new leads CSV", type=['csv'])
+    leads_file = st.file_uploader("Upload new leads file", type=['xlsx', 'csv'])
     if leads_file:
         if is_file_empty(leads_file):
             st.error("The uploaded file is empty")
         else:
-            with st.expander("Debug Info", expanded=False):
-                st.text("File Preview:")
-                st.code(peek_file(leads_file))
-            
-            leads_df = process_csv(leads_file)
+            if leads_file.name.endswith('.xlsx'):
+                leads_df = process_excel(leads_file)
+            else:
+                leads_df = process_csv(leads_file)
             if leads_df is not None:
                 st.success(f"✓ Loaded {len(leads_df)} leads")
                 if len(leads_df.columns) > 0:
-                    st.info("Loaded columns: " + ", ".join(leads_df.columns))
+                    with st.expander("View loaded columns", expanded=False):
+                        st.info("\n".join(leads_df.columns))
 
 if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file and leads_file)):
     with st.spinner("Processing leads..."):
@@ -329,12 +290,18 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
             if not new_leads_df.empty:
                 st.dataframe(new_leads_df)
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                csv = new_leads_df.to_csv(sep=';', index=False, encoding='utf-8')
+                
+                # Save as Excel
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    new_leads_df.to_excel(writer, index=False)
+                excel_data = output.getvalue()
+                
                 st.download_button(
-                    label="📥 Download New Leads CSV",
-                    data=csv.encode('utf-8'),
-                    file_name=f"new_leads_{timestamp}.csv",
-                    mime="text/csv"
+                    label="📥 Download New Leads Excel",
+                    data=excel_data,
+                    file_name=f"new_leads_{timestamp}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
         
         with tab2:
@@ -342,12 +309,18 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
             if not existing_leads_df.empty:
                 st.dataframe(existing_leads_df)
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                csv = existing_leads_df.to_csv(sep=';', index=False, encoding='utf-8')
+                
+                # Save as Excel
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    existing_leads_df.to_excel(writer, index=False)
+                excel_data = output.getvalue()
+                
                 st.download_button(
-                    label="📥 Download Existing Leads CSV",
-                    data=csv.encode('utf-8'),
-                    file_name=f"existing_leads_{timestamp}.csv",
-                    mime="text/csv"
+                    label="📥 Download Existing Leads Excel",
+                    data=excel_data,
+                    file_name=f"existing_leads_{timestamp}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
 st.markdown("---")
