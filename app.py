@@ -7,7 +7,6 @@ from fuzzywuzzy import fuzz
 import re
 from io import BytesIO
 
-# Page configuration
 st.set_page_config(
     page_title="HubSpot Leads Checker",
     layout="wide",
@@ -15,7 +14,6 @@ st.set_page_config(
 )
 
 def is_file_empty(file):
-    """Check if the uploaded file is empty"""
     pos = file.tell()
     file.seek(0, 2)
     size = file.tell()
@@ -23,7 +21,6 @@ def is_file_empty(file):
     return size == 0
 
 def extract_domain(email):
-    """Extract base domain from email address, ignoring TLD"""
     if pd.isna(email) or not isinstance(email, str):
         return ''
     try:
@@ -35,7 +32,6 @@ def extract_domain(email):
         return ''
 
 def normalize_company_name(name):
-    """Normalize company name for comparison"""
     if pd.isna(name) or not isinstance(name, str):
         return ''
     normalized = re.sub(r'[^\w\s]', '', name.lower())
@@ -45,54 +41,36 @@ def normalize_company_name(name):
     return normalized.strip()
 
 def extract_email_from_text(text):
-    """Extract email from text string"""
     if pd.isna(text) or not isinstance(text, str):
         return ''
     email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
     return email_match.group(0) if email_match else ''
 
 def fix_column_names(df):
-    """Clean and standardize column names"""
     if df is None:
         return None
-    
     columns = df.columns if isinstance(df.columns, pd.Index) else list(df.columns)
-    
-    clean_columns = []
-    for col in columns:
-        col = str(col).replace('\ufeff', '')
-        col = col.strip('"').strip("'")
-        col = col.strip()
-        clean_columns.append(col)
-    
+    clean_columns = [str(col).replace('\ufeff', '').strip('"').strip("'").strip() for col in columns]
     df.columns = clean_columns
     return df
 
 def process_excel(uploaded_file):
-    """Process uploaded Excel file with HubSpot format handling"""
     if uploaded_file is not None:
         try:
-            df = pd.read_excel(
-                uploaded_file,
-                engine='openpyxl',
-                dtype=str
-            )
+            df = pd.read_excel(uploaded_file, engine='openpyxl', dtype=str)
             df = fix_column_names(df)
             df = df.dropna(how='all').dropna(axis=1, how='all')
             return df
-            
         except Exception as e:
-            st.error(f"Error reading file: Please ensure it's a valid HubSpot Excel export.")
+            st.error("Error reading file: Please ensure it's a valid HubSpot Excel export.")
             with st.expander("Error Details"):
                 st.error(str(e))
             return None
     return None
 
 def clean_output_data(df):
-    """Clean and prepare output data"""
     if df.empty:
         return df
-    
     primary_columns = [
         'Vorname', 'Nachname', 'E-Mail-Adresse', 'Firma/Organisation',
         'First Name', 'Last Name', 'Email', 'Company',
@@ -100,16 +78,12 @@ def clean_output_data(df):
         'Domain-Name des Unternehmens',
         'Reason'
     ]
-    
     columns = [col for col in primary_columns if col in df.columns]
     if not columns:
         columns = df.columns.tolist()
-    
-    cleaned_df = df[columns].drop_duplicates()
-    return cleaned_df
+    return df[columns].drop_duplicates()
 
 def save_to_excel(df, filename):
-    """Save DataFrame to Excel with proper formatting"""
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
@@ -120,12 +94,9 @@ def save_to_excel(df, filename):
                 len(str(col))
             ) + 2
             worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
-    
     return buffer.getvalue()
 
-# NEUE FUNKTION BEGINNT
 def check_leads(deals_df, alignment_df, new_leads_df):
-    """Check leads against existing deals and alignments"""
     if deals_df is None or alignment_df is None or new_leads_df is None:
         return None, None, None
 
@@ -133,24 +104,26 @@ def check_leads(deals_df, alignment_df, new_leads_df):
     company_domains = {}
     if 'Associated Company' in deals_df.columns and 'Associated Contact' in deals_df.columns:
         for _, row in deals_df.iterrows():
-            company = normalize_company_name(row['Associated Company'])
-            email = extract_email_from_text(row['Associated Contact'])
-            if company and email:
-                domain = extract_domain(email)
-                if domain:
-                    if company not in company_domains:
-                        company_domains[company] = set()
-                    company_domains[company].add(domain)
+            if pd.notna(row['Associated Company']) and pd.notna(row['Associated Contact']):
+                company = normalize_company_name(row['Associated Company'])
+                email = extract_email_from_text(row['Associated Contact'])
+                if company and email:
+                    domain = extract_domain(email)
+                    if domain:
+                        if company not in company_domains:
+                            company_domains[company] = set()
+                        company_domains[company].add(domain)
 
     # Add domains from alignment check
     if 'Domain-Name des Unternehmens' in alignment_df.columns and 'Unternehmensname' in alignment_df.columns:
         for _, row in alignment_df.iterrows():
-            company = normalize_company_name(row['Unternehmensname'])
-            domain = extract_domain(row['Domain-Name des Unternehmens'])
-            if company and domain:
-                if company not in company_domains:
-                    company_domains[company] = set()
-                company_domains[company].add(domain)
+            if pd.notna(row['Unternehmensname']) and pd.notna(row['Domain-Name des Unternehmens']):
+                company = normalize_company_name(row['Unternehmensname'])
+                domain = extract_domain(row['Domain-Name des Unternehmens'])
+                if company and domain:
+                    if company not in company_domains:
+                        company_domains[company] = set()
+                    company_domains[company].add(domain)
 
     new_leads = []
     existing_leads = []
@@ -163,7 +136,6 @@ def check_leads(deals_df, alignment_df, new_leads_df):
         progress = (idx + 1) / total_leads
         progress_bar.progress(progress)
         
-        # Get lead email and domain
         lead_email = ''
         for email_col in ['E-Mail-Adresse', 'Email', 'E-Mail']:
             if email_col in lead and pd.notna(lead[email_col]):
@@ -172,7 +144,6 @@ def check_leads(deals_df, alignment_df, new_leads_df):
         
         lead_domain = extract_domain(lead_email) if lead_email else ''
 
-        # Get lead company
         lead_company = ''
         for company_col in ['Firma/Organisation', 'Company', 'Firma']:
             if company_col in lead and pd.notna(lead[company_col]):
@@ -180,10 +151,9 @@ def check_leads(deals_df, alignment_df, new_leads_df):
                 break
 
         match_found = False
-        double_check = False
         reasons = []
 
-        # Check if company exists and match domain
+        # Check company and domain matches
         for existing_company, domains in company_domains.items():
             if lead_company and normalize_company_name(lead_company) == existing_company:
                 match_found = True
@@ -192,14 +162,10 @@ def check_leads(deals_df, alignment_df, new_leads_df):
                 match_found = True
                 reasons.append(f'Email domain matches company: {existing_company}')
 
-        # Add to appropriate list
         lead_dict = lead.to_dict()
-        if reasons:
+        if match_found:
             lead_dict['Reason'] = ' & '.join(reasons)
-            if match_found:
-                existing_leads.append(lead_dict)
-            else:
-                double_check_leads.append(lead_dict)
+            existing_leads.append(lead_dict)
         else:
             new_leads.append(lead_dict)
 
@@ -208,9 +174,8 @@ def check_leads(deals_df, alignment_df, new_leads_df):
     return (
         pd.DataFrame(new_leads) if new_leads else pd.DataFrame(),
         pd.DataFrame(existing_leads) if existing_leads else pd.DataFrame(),
-        pd.DataFrame(double_check_leads) if double_check_leads else pd.DataFrame()
+        pd.DataFrame()  # Empty double_check_df as per new requirements
     )
-# NEUE FUNKTION ENDET
 
 # Streamlit UI
 st.title("HubSpot Leads Checker")
@@ -268,19 +233,17 @@ with col3:
 
 if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file and leads_file)):
     with st.spinner("Processing leads..."):
-        new_leads_df, existing_leads_df, double_check_df = check_leads(deals_df, alignment_df, leads_df)
+        new_leads_df, existing_leads_df, _ = check_leads(deals_df, alignment_df, leads_df)
         
-        tab1, tab2, tab3 = st.tabs(["✨ New Leads", "🔄 Existing Leads", "⚠️ Double Check"])
+        tab1, tab2 = st.tabs(["✨ New Leads", "🔄 Existing Leads"])
         
         with tab1:
             st.subheader(f"New Leads ({len(new_leads_df)})")
             if not new_leads_df.empty:
                 display_df = clean_output_data(new_leads_df)
                 st.dataframe(display_df)
-                
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 excel_data = save_to_excel(display_df, f"new_leads_{timestamp}.xlsx")
-                
                 st.download_button(
                     label="📥 Download New Leads Excel",
                     data=excel_data,
@@ -293,30 +256,12 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
             if not existing_leads_df.empty:
                 display_df = clean_output_data(existing_leads_df)
                 st.dataframe(display_df)
-                
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 excel_data = save_to_excel(display_df, f"existing_leads_{timestamp}.xlsx")
-                
                 st.download_button(
                     label="📥 Download Existing Leads Excel",
                     data=excel_data,
                     file_name=f"existing_leads_{timestamp}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-        with tab3:
-            st.subheader(f"Double Check Required ({len(double_check_df)})")
-            if not double_check_df.empty:
-                display_df = clean_output_data(double_check_df)
-                st.dataframe(display_df)
-                
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                excel_data = save_to_excel(display_df, f"double_check_leads_{timestamp}.xlsx")
-                
-                st.download_button(
-                    label="📥 Download Double Check Leads Excel",
-                    data=excel_data,
-                    file_name=f"double_check_leads_{timestamp}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
