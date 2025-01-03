@@ -13,6 +13,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+def is_file_empty(file):
+    """Check if the uploaded file is empty"""
+    pos = file.tell()
+    file.seek(0, 2)  # Seek to end of file
+    size = file.tell()
+    file.seek(pos)  # Seek back to original position
+    return size == 0
+
 def extract_domain(email):
     """Extract base domain from email address, ignoring TLD"""
     if pd.isna(email) or not isinstance(email, str):
@@ -49,7 +57,6 @@ def fix_column_names(df):
     """Clean and standardize column names from HubSpot export"""
     if df is None:
         return None
-        
     # Remove any BOM characters and clean column names
     df.columns = df.columns.str.replace('\ufeff', '')
     df.columns = df.columns.str.strip()
@@ -59,27 +66,52 @@ def process_csv(uploaded_file):
     """Process uploaded CSV with HubSpot format handling"""
     if uploaded_file is not None:
         try:
-            # Try reading with comma delimiter first
-            df = pd.read_csv(uploaded_file, encoding='utf-8', dtype=str)
+            # Try reading with comma delimiter and handle quoted fields
+            df = pd.read_csv(
+                uploaded_file,
+                encoding='utf-8',
+                dtype=str,
+                quoting=1,  # QUOTE_ALL
+                quotechar='"',
+                escapechar='\\',
+                on_bad_lines='skip'
+            )
             df = fix_column_names(df)
-            # Check if we got only one column (might be semicolon separated)
             if len(df.columns) == 1:
                 raise pd.errors.EmptyDataError
             return df
-        except (pd.errors.EmptyDataError, UnicodeDecodeError):
+        except (pd.errors.EmptyDataError, UnicodeDecodeError, pd.errors.ParserError):
             try:
                 # Try with semicolon delimiter
-                df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8', dtype=str)
+                df = pd.read_csv(
+                    uploaded_file,
+                    sep=';',
+                    encoding='utf-8',
+                    dtype=str,
+                    quoting=1,  # QUOTE_ALL
+                    quotechar='"',
+                    escapechar='\\',
+                    on_bad_lines='skip'
+                )
                 df = fix_column_names(df)
                 return df
-            except UnicodeDecodeError:
+            except (UnicodeDecodeError, pd.errors.ParserError):
                 try:
                     # Final attempt with CP1252 encoding
-                    df = pd.read_csv(uploaded_file, sep=';', encoding='cp1252', dtype=str)
+                    df = pd.read_csv(
+                        uploaded_file,
+                        sep=';',
+                        encoding='cp1252',
+                        dtype=str,
+                        quoting=1,  # QUOTE_ALL
+                        quotechar='"',
+                        escapechar='\\',
+                        on_bad_lines='skip'
+                    )
                     df = fix_column_names(df)
                     return df
-                except:
-                    st.error("Error reading file. Please ensure it's a valid CSV.")
+                except Exception as e:
+                    st.error("Error reading file: The file format is not as expected. Please ensure it's a valid HubSpot export.")
                     return None
     return None
 
@@ -90,7 +122,7 @@ def check_leads(deals_df, alignment_df, new_leads_df):
 
     # Create sets for lookups with proper column names
     existing_emails = set()
-    email_columns = ['Email', 'Associated Email', 'E-Mail']
+    email_columns = ['Email', 'Associated Email', 'E-Mail', 'E-Mail-Adresse']
     for col in email_columns:
         if col in deals_df.columns:
             existing_emails.update(deals_df[col].dropna().apply(lambda x: x.lower().strip()))
@@ -106,12 +138,14 @@ def check_leads(deals_df, alignment_df, new_leads_df):
 
     # Handle domains from alignment file
     existing_domains = set()
-    if 'Domain-Name des Unternehmens' in alignment_df.columns:
-        existing_domains.update(
-            alignment_df['Domain-Name des Unternehmens']
-            .dropna()
-            .apply(extract_domain)
-        )
+    domain_columns = ['Domain-Name des Unternehmens', 'Website', 'Domain']
+    for col in domain_columns:
+        if col in alignment_df.columns:
+            existing_domains.update(
+                alignment_df[col]
+                .dropna()
+                .apply(extract_domain)
+            )
 
     new_leads = []
     existing_leads = []
@@ -138,16 +172,19 @@ def check_leads(deals_df, alignment_df, new_leads_df):
         match_found = False
         reason = []
 
+        # Check exact email match
         if email in existing_emails:
             match_found = True
             reason.append('Email exists in deals')
 
+        # Check domain match if email wasn't found
         if not match_found and email:
             lead_domain = extract_domain(email)
-            if lead_domain in existing_domains:
+            if lead_domain and lead_domain in existing_domains:
                 match_found = True
                 reason.append('Company domain exists')
 
+        # Check company name match if no other match found
         if not match_found and company:
             for existing_company in existing_companies:
                 if are_companies_similar(company, existing_company):
@@ -188,28 +225,40 @@ with col1:
     st.subheader("1. HubSpot Deals")
     deals_file = st.file_uploader("Upload HubSpot Deals export", type=['csv'])
     if deals_file:
-        deals_df = process_csv(deals_file)
-        if deals_df is not None:
-            st.success(f"✓ Loaded {len(deals_df)} deals")
-            st.info("Preview of loaded columns: " + ", ".join(deals_df.columns[:3]) + "...")
+        if is_file_empty(deals_file):
+            st.error("The uploaded file is empty")
+        else:
+            deals_df = process_csv(deals_file)
+            if deals_df is not None:
+                st.success(f"✓ Loaded {len(deals_df)} deals")
+                if len(deals_df.columns) > 0:
+                    st.info("Preview of loaded columns: " + ", ".join(deals_df.columns[:3]) + "...")
 
 with col2:
     st.subheader("2. Deal Alignment")
     alignment_file = st.file_uploader("Upload Deal Alignment export", type=['csv'])
     if alignment_file:
-        alignment_df = process_csv(alignment_file)
-        if alignment_df is not None:
-            st.success(f"✓ Loaded {len(alignment_df)} alignments")
-            st.info("Preview of loaded columns: " + ", ".join(alignment_df.columns[:3]) + "...")
+        if is_file_empty(alignment_file):
+            st.error("The uploaded file is empty")
+        else:
+            alignment_df = process_csv(alignment_file)
+            if alignment_df is not None:
+                st.success(f"✓ Loaded {len(alignment_df)} alignments")
+                if len(alignment_df.columns) > 0:
+                    st.info("Preview of loaded columns: " + ", ".join(alignment_df.columns[:3]) + "...")
 
 with col3:
     st.subheader("3. New Leads")
     leads_file = st.file_uploader("Upload new leads CSV", type=['csv'])
     if leads_file:
-        leads_df = process_csv(leads_file)
-        if leads_df is not None:
-            st.success(f"✓ Loaded {len(leads_df)} leads")
-            st.info("Preview of loaded columns: " + ", ".join(leads_df.columns[:3]) + "...")
+        if is_file_empty(leads_file):
+            st.error("The uploaded file is empty")
+        else:
+            leads_df = process_csv(leads_file)
+            if leads_df is not None:
+                st.success(f"✓ Loaded {len(leads_df)} leads")
+                if len(leads_df.columns) > 0:
+                    st.info("Preview of loaded columns: " + ", ".join(leads_df.columns[:3]) + "...")
 
 if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file and leads_file)):
     with st.spinner("Processing leads..."):
