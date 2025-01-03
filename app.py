@@ -13,6 +13,17 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Debug helper
+def peek_file(file):
+    """Debug helper to peek at file contents"""
+    try:
+        pos = file.tell()
+        content = file.read(1000).decode('utf-8')
+        file.seek(pos)
+        return content
+    except:
+        return "Could not read file content"
+
 def is_file_empty(file):
     """Check if the uploaded file is empty"""
     pos = file.tell()
@@ -60,52 +71,49 @@ def fix_column_names(df):
     # Remove any BOM characters and clean column names
     df.columns = df.columns.str.replace('\ufeff', '')
     df.columns = df.columns.str.strip()
+    # Remove quotes from column names if they exist
+    df.columns = df.columns.str.replace('"', '')
     return df
 
 def process_csv(uploaded_file):
     """Process uploaded CSV with HubSpot format handling"""
     if uploaded_file is not None:
         try:
-            # Try reading with comma delimiter and handle quoted fields
+            # First attempt: comma delimiter with minimal options
             df = pd.read_csv(
                 uploaded_file,
                 encoding='utf-8',
                 dtype=str,
-                quoting=1,  # QUOTE_ALL
-                quotechar='"',
-                escapechar='\\',
                 on_bad_lines='skip'
             )
             df = fix_column_names(df)
-            if len(df.columns) == 1:
+            if len(df.columns) <= 1:  # If we only got one column, try semicolon
                 raise pd.errors.EmptyDataError
             return df
-        except (pd.errors.EmptyDataError, UnicodeDecodeError, pd.errors.ParserError):
+        except (pd.errors.EmptyDataError, UnicodeDecodeError):
             try:
-                # Try with semicolon delimiter
+                # Second attempt: semicolon delimiter
+                uploaded_file.seek(0)  # Reset file pointer
                 df = pd.read_csv(
                     uploaded_file,
                     sep=';',
                     encoding='utf-8',
                     dtype=str,
-                    quoting=1,  # QUOTE_ALL
-                    quotechar='"',
-                    escapechar='\\',
                     on_bad_lines='skip'
                 )
                 df = fix_column_names(df)
+                if len(df.columns) <= 1:  # If still only one column, try different encoding
+                    raise UnicodeDecodeError
                 return df
             except (UnicodeDecodeError, pd.errors.ParserError):
                 try:
-                    # Final attempt with CP1252 encoding
+                    # Final attempt: CP1252 encoding with semicolon
+                    uploaded_file.seek(0)  # Reset file pointer
                     df = pd.read_csv(
                         uploaded_file,
                         sep=';',
                         encoding='cp1252',
                         dtype=str,
-                        quoting=1,  # QUOTE_ALL
-                        quotechar='"',
-                        escapechar='\\',
                         on_bad_lines='skip'
                     )
                     df = fix_column_names(df)
@@ -228,11 +236,16 @@ with col1:
         if is_file_empty(deals_file):
             st.error("The uploaded file is empty")
         else:
+            # Add debug information in expander
+            with st.expander("Debug Info", expanded=False):
+                st.text("File Preview:")
+                st.code(peek_file(deals_file))
+            
             deals_df = process_csv(deals_file)
             if deals_df is not None:
                 st.success(f"✓ Loaded {len(deals_df)} deals")
                 if len(deals_df.columns) > 0:
-                    st.info("Preview of loaded columns: " + ", ".join(deals_df.columns[:3]) + "...")
+                    st.info("Loaded columns: " + ", ".join(deals_df.columns))
 
 with col2:
     st.subheader("2. Deal Alignment")
@@ -241,11 +254,16 @@ with col2:
         if is_file_empty(alignment_file):
             st.error("The uploaded file is empty")
         else:
+            # Add debug information in expander
+            with st.expander("Debug Info", expanded=False):
+                st.text("File Preview:")
+                st.code(peek_file(alignment_file))
+            
             alignment_df = process_csv(alignment_file)
             if alignment_df is not None:
                 st.success(f"✓ Loaded {len(alignment_df)} alignments")
                 if len(alignment_df.columns) > 0:
-                    st.info("Preview of loaded columns: " + ", ".join(alignment_df.columns[:3]) + "...")
+                    st.info("Loaded columns: " + ", ".join(alignment_df.columns))
 
 with col3:
     st.subheader("3. New Leads")
@@ -254,11 +272,16 @@ with col3:
         if is_file_empty(leads_file):
             st.error("The uploaded file is empty")
         else:
+            # Add debug information in expander
+            with st.expander("Debug Info", expanded=False):
+                st.text("File Preview:")
+                st.code(peek_file(leads_file))
+            
             leads_df = process_csv(leads_file)
             if leads_df is not None:
                 st.success(f"✓ Loaded {len(leads_df)} leads")
                 if len(leads_df.columns) > 0:
-                    st.info("Preview of loaded columns: " + ", ".join(leads_df.columns[:3]) + "...")
+                    st.info("Loaded columns: " + ", ".join(leads_df.columns))
 
 if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file and leads_file)):
     with st.spinner("Processing leads..."):
