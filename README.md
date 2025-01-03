@@ -1,23 +1,32 @@
 # HubSpot Leads Checker
 
-A Streamlit application for checking new leads against existing HubSpot deals and alignments.
+A Streamlit application for checking new leads against existing HubSpot deals and company alignments.
+
+## Features
+
+- Direct processing of HubSpot Excel exports
+- Smart email domain matching
+- Fuzzy company name matching
+- Support for large files
+- Separate download for new and existing leads
+
+## Required Files
+
+### HubSpot Deals Excel (alle deals.xlsx):
+- Export directly from HubSpot
+
+### Deal Alignment Excel (deal alignment check.xlsx):
+- Export directly from HubSpot
+
+### New Leads (Excel or CSV):
+- Must contain:
+  - Email address
+  - Company name
+  - First name
+  - Last name
 
 ## Setup
 
 1. Install requirements:
 ```bash
 pip install -r requirements.txt
-```
-
-2. Run the app:
-```bash
-streamlit run app.py
-```
-
-## Usage
-
-1. Upload your HubSpot Deals CSV file
-2. Upload your Deal Alignment CSV file
-3. Upload your New Leads CSV file
-4. Click Process to analyze the data
-5. Download the filtered results
