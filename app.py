@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import io
 from datetime import datetime
 import tldextract
 from fuzzywuzzy import fuzz
@@ -14,13 +13,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Utility functions
 def extract_domain(email):
     """Extract base domain from email address, ignoring TLD"""
     if pd.isna(email) or not isinstance(email, str):
         return ''
     try:
-        # Remove everything before @ if it's an email
         if '@' in email:
             email = email.split('@')[1]
         extracted = tldextract.extract(email.lower().strip())
@@ -32,10 +29,8 @@ def normalize_company_name(name):
     """Normalize company name for comparison"""
     if pd.isna(name) or not isinstance(name, str):
         return ''
-    # Convert to lowercase and remove special characters
     normalized = re.sub(r'[^\w\s]', '', name.lower())
-    # Remove common company suffixes
-    suffixes = [' gmbh', ' ag', ' ltd', ' llc', ' inc', ' bv']
+    suffixes = [' gmbh', ' ag', ' ltd', ' llc', ' inc', ' bv', ' holding']
     for suffix in suffixes:
         normalized = normalized.replace(suffix, '')
     return normalized.strip()
@@ -50,67 +45,77 @@ def are_companies_similar(comp1, comp2, threshold=85):
         return False
     return fuzz.ratio(norm1, norm2) >= threshold
 
+def fix_column_names(df):
+    """Clean and standardize column names from HubSpot export"""
+    if df is None:
+        return None
+        
+    # Remove any BOM characters and clean column names
+    df.columns = df.columns.str.replace('\ufeff', '')
+    df.columns = df.columns.str.strip()
+    return df
+
 def process_csv(uploaded_file):
-    """Process uploaded CSV file with encoding detection"""
+    """Process uploaded CSV with HubSpot format handling"""
     if uploaded_file is not None:
         try:
-            # Try CP1252 first (common for German files)
-            df = pd.read_csv(uploaded_file, sep=';', encoding='cp1252')
-        except UnicodeDecodeError:
+            # Try reading with comma delimiter first
+            df = pd.read_csv(uploaded_file, encoding='utf-8', dtype=str)
+            df = fix_column_names(df)
+            # Check if we got only one column (might be semicolon separated)
+            if len(df.columns) == 1:
+                raise pd.errors.EmptyDataError
+            return df
+        except (pd.errors.EmptyDataError, UnicodeDecodeError):
             try:
-                # Fallback to UTF-8
-                df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8')
-            except:
-                st.error("Error reading file. Please ensure it's a valid CSV.")
-                return None
-        return df
+                # Try with semicolon delimiter
+                df = pd.read_csv(uploaded_file, sep=';', encoding='utf-8', dtype=str)
+                df = fix_column_names(df)
+                return df
+            except UnicodeDecodeError:
+                try:
+                    # Final attempt with CP1252 encoding
+                    df = pd.read_csv(uploaded_file, sep=';', encoding='cp1252', dtype=str)
+                    df = fix_column_names(df)
+                    return df
+                except:
+                    st.error("Error reading file. Please ensure it's a valid CSV.")
+                    return None
     return None
 
-def validate_columns(df, required_columns, file_type):
-    """Validate that required columns are present"""
-    missing_columns = [col for col in required_columns if col not in df.columns]
-    if missing_columns:
-        st.error(f"Missing required columns in {file_type}: {', '.join(missing_columns)}")
-        return False
-    return True
-
 def check_leads(deals_df, alignment_df, new_leads_df):
-    """Enhanced lead checking with domain and fuzzy company matching"""
+    """Enhanced lead checking for HubSpot export formats"""
     if deals_df is None or alignment_df is None or new_leads_df is None:
         return None, None
 
-    # Create sets and dictionaries for lookups
-    existing_emails = set(
-        deals_df['Associated Email']
-        .dropna()
-        .apply(lambda x: x.lower().strip())
-    )
+    # Create sets for lookups with proper column names
+    existing_emails = set()
+    email_columns = ['Email', 'Associated Email', 'E-Mail']
+    for col in email_columns:
+        if col in deals_df.columns:
+            existing_emails.update(deals_df[col].dropna().apply(lambda x: x.lower().strip()))
+
+    # Handle company names from both files
+    existing_companies = []
+    company_columns = ['Associated Company', 'Company', 'Unternehmensname']
     
-    existing_domains = set(
-        deals_df['Associated Email']
-        .dropna()
-        .apply(extract_domain)
-    )
+    for df in [deals_df, alignment_df]:
+        for col in company_columns:
+            if col in df.columns:
+                existing_companies.extend(df[col].dropna().tolist())
 
-    # Add domains from alignment file
-    existing_domains.update(
-        alignment_df['Domain-Name des Unternehmens']
-        .dropna()
-        .apply(extract_domain)
-    )
-
-    # Prepare company names
-    existing_companies = list(
-        pd.concat([
-            deals_df['Associated Company'].dropna(),
-            alignment_df['Unternehmensname'].dropna()
-        ])
-    )
+    # Handle domains from alignment file
+    existing_domains = set()
+    if 'Domain-Name des Unternehmens' in alignment_df.columns:
+        existing_domains.update(
+            alignment_df['Domain-Name des Unternehmens']
+            .dropna()
+            .apply(extract_domain)
+        )
 
     new_leads = []
     existing_leads = []
 
-    # Process each lead with detailed matching
     total_leads = len(new_leads_df)
     progress_bar = st.progress(0)
     
@@ -118,25 +123,31 @@ def check_leads(deals_df, alignment_df, new_leads_df):
         progress = (idx + 1) / total_leads
         progress_bar.progress(progress)
         
-        email = lead['E-Mail-Adresse'].lower().strip() if pd.notna(lead['E-Mail-Adresse']) else ''
-        company = lead['Firma/Organisation'] if pd.notna(lead['Firma/Organisation']) else ''
-        
+        email = ''
+        for email_col in ['E-Mail-Adresse', 'Email', 'E-Mail']:
+            if email_col in lead and pd.notna(lead[email_col]):
+                email = lead[email_col].lower().strip()
+                break
+
+        company = ''
+        for company_col in ['Firma/Organisation', 'Company', 'Firma']:
+            if company_col in lead and pd.notna(lead[company_col]):
+                company = lead[company_col]
+                break
+
         match_found = False
         reason = []
 
-        # Check exact email match
         if email in existing_emails:
             match_found = True
             reason.append('Email exists in deals')
 
-        # Check domain match
         if not match_found and email:
             lead_domain = extract_domain(email)
             if lead_domain in existing_domains:
                 match_found = True
-                reason.append('Company domain exists in deals')
+                reason.append('Company domain exists')
 
-        # Check company name match
         if not match_found and company:
             for existing_company in existing_companies:
                 if are_companies_similar(company, existing_company):
@@ -164,51 +175,46 @@ st.markdown("---")
 
 with st.expander("📋 Instructions", expanded=False):
     st.markdown("""
-    1. Upload your HubSpot Deals CSV file (alle Deals.csv)
-    2. Upload your Deal Alignment CSV file (Deal alignment check.csv)
+    1. Export and upload your HubSpot Deals CSV file (no modifications needed)
+    2. Export and upload your Deal Alignment CSV file (no modifications needed)
     3. Upload your New Leads CSV file
     4. Click Process to analyze the data
     5. Download the filtered results
-    
-    **Note:** The tool handles various domain extensions (.com, .de, .nl) and similar company names.
     """)
 
-# File uploaders in columns
 col1, col2, col3 = st.columns(3)
 
 with col1:
     st.subheader("1. HubSpot Deals")
-    deals_file = st.file_uploader("Upload alle Deals.csv", type=['csv'])
+    deals_file = st.file_uploader("Upload HubSpot Deals export", type=['csv'])
     if deals_file:
         deals_df = process_csv(deals_file)
-        if deals_df is not None and validate_columns(deals_df, ['Associated Email', 'Associated Company'], 'HubSpot Deals'):
+        if deals_df is not None:
             st.success(f"✓ Loaded {len(deals_df)} deals")
-            st.info(f"Found {deals_df['Associated Email'].notna().sum()} emails and {deals_df['Associated Company'].notna().sum()} companies")
+            st.info("Preview of loaded columns: " + ", ".join(deals_df.columns[:3]) + "...")
 
 with col2:
     st.subheader("2. Deal Alignment")
-    alignment_file = st.file_uploader("Upload Deal alignment check.csv", type=['csv'])
+    alignment_file = st.file_uploader("Upload Deal Alignment export", type=['csv'])
     if alignment_file:
         alignment_df = process_csv(alignment_file)
-        if alignment_df is not None and validate_columns(alignment_df, ['Unternehmensname', 'Domain-Name des Unternehmens'], 'Deal Alignment'):
+        if alignment_df is not None:
             st.success(f"✓ Loaded {len(alignment_df)} alignments")
-            st.info(f"Found {alignment_df['Domain-Name des Unternehmens'].notna().sum()} domains")
+            st.info("Preview of loaded columns: " + ", ".join(alignment_df.columns[:3]) + "...")
 
 with col3:
     st.subheader("3. New Leads")
     leads_file = st.file_uploader("Upload new leads CSV", type=['csv'])
     if leads_file:
         leads_df = process_csv(leads_file)
-        if leads_df is not None and validate_columns(leads_df, ['E-Mail-Adresse', 'Firma/Organisation'], 'New Leads'):
+        if leads_df is not None:
             st.success(f"✓ Loaded {len(leads_df)} leads")
-            st.info(f"Found {leads_df['E-Mail-Adresse'].notna().sum()} emails")
+            st.info("Preview of loaded columns: " + ", ".join(leads_df.columns[:3]) + "...")
 
-# Process button
 if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file and leads_file)):
     with st.spinner("Processing leads..."):
         new_leads_df, existing_leads_df = check_leads(deals_df, alignment_df, leads_df)
         
-        # Display results in tabs
         tab1, tab2 = st.tabs(["✨ New Leads", "🔄 Existing Leads"])
         
         with tab1:
@@ -216,10 +222,10 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
             if not new_leads_df.empty:
                 st.dataframe(new_leads_df)
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                csv = new_leads_df.to_csv(sep=';', index=False, encoding='cp1252')
+                csv = new_leads_df.to_csv(sep=';', index=False, encoding='utf-8')
                 st.download_button(
                     label="📥 Download New Leads CSV",
-                    data=csv.encode('cp1252'),
+                    data=csv.encode('utf-8'),
                     file_name=f"new_leads_{timestamp}.csv",
                     mime="text/csv"
                 )
@@ -229,14 +235,13 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
             if not existing_leads_df.empty:
                 st.dataframe(existing_leads_df)
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                csv = existing_leads_df.to_csv(sep=';', index=False, encoding='cp1252')
+                csv = existing_leads_df.to_csv(sep=';', index=False, encoding='utf-8')
                 st.download_button(
                     label="📥 Download Existing Leads CSV",
-                    data=csv.encode('cp1252'),
+                    data=csv.encode('utf-8'),
                     file_name=f"existing_leads_{timestamp}.csv",
                     mime="text/csv"
                 )
 
-# Footer
 st.markdown("---")
 st.markdown("Made with ❤️ for HubSpot lead management")
