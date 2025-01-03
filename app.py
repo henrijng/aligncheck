@@ -72,8 +72,7 @@ def clean_output_data(df):
     if df.empty:
         return df
     primary_columns = [
-        'Vorname', 'Nachname', 'E-Mail-Adresse', 'Firma/Organisation',
-        'First Name', 'Last Name', 'Email', 'Company',
+        'Vorname', 'Nachname', 'Email', 'Unternehmen',
         'Associated Contact', 'Associated Company',
         'Domain-Name des Unternehmens',
         'Reason'
@@ -98,7 +97,7 @@ def save_to_excel(df, filename):
 
 def check_leads(deals_df, alignment_df, new_leads_df):
     if deals_df is None or alignment_df is None or new_leads_df is None:
-        return None, None, None
+        return None, None
 
     # Store domains per company
     company_domains = {}
@@ -119,7 +118,7 @@ def check_leads(deals_df, alignment_df, new_leads_df):
         for _, row in alignment_df.iterrows():
             if pd.notna(row['Unternehmensname']) and pd.notna(row['Domain-Name des Unternehmens']):
                 company = normalize_company_name(row['Unternehmensname'])
-                domain = extract_domain(row['Domain-Name des Unternehmens'])
+                domain = str(row['Domain-Name des Unternehmens']).lower().strip()
                 if company and domain:
                     if company not in company_domains:
                         company_domains[company] = set()
@@ -127,7 +126,6 @@ def check_leads(deals_df, alignment_df, new_leads_df):
 
     new_leads = []
     existing_leads = []
-    double_check_leads = []
 
     total_leads = len(new_leads_df)
     progress_bar = st.progress(0)
@@ -136,29 +134,26 @@ def check_leads(deals_df, alignment_df, new_leads_df):
         progress = (idx + 1) / total_leads
         progress_bar.progress(progress)
         
-        lead_email = ''
-        for email_col in ['E-Mail-Adresse', 'Email', 'E-Mail']:
-            if email_col in lead and pd.notna(lead[email_col]):
-                lead_email = lead[email_col].lower().strip()
-                break
-        
-        lead_domain = extract_domain(lead_email) if lead_email else ''
+        # Required fields check
+        if not all(field in lead and pd.notna(lead[field]) for field in ['Vorname', 'Nachname', 'Email', 'Unternehmen']):
+            continue
 
-        lead_company = ''
-        for company_col in ['Firma/Organisation', 'Company', 'Firma']:
-            if company_col in lead and pd.notna(lead[company_col]):
-                lead_company = normalize_company_name(str(lead[company_col]))
-                break
+        lead_email = lead['Email'].lower().strip()
+        lead_domain = extract_domain(lead_email)
+        lead_company = normalize_company_name(lead['Unternehmen'])
 
         match_found = False
         reasons = []
 
         # Check company and domain matches
         for existing_company, domains in company_domains.items():
-            if lead_company and normalize_company_name(lead_company) == existing_company:
+            if lead_company and lead_company == existing_company:
                 match_found = True
                 reasons.append(f'Company already exists: {existing_company}')
-            elif lead_domain and lead_domain in domains:
+            elif lead_domain and (
+                lead_domain in domains or 
+                any(d.split('.')[0] == lead_domain.split('.')[0] for d in domains)  # Check base domain
+            ):
                 match_found = True
                 reasons.append(f'Email domain matches company: {existing_company}')
 
@@ -173,8 +168,7 @@ def check_leads(deals_df, alignment_df, new_leads_df):
 
     return (
         pd.DataFrame(new_leads) if new_leads else pd.DataFrame(),
-        pd.DataFrame(existing_leads) if existing_leads else pd.DataFrame(),
-        pd.DataFrame()  # Empty double_check_df as per new requirements
+        pd.DataFrame(existing_leads) if existing_leads else pd.DataFrame()
     )
 
 # Streamlit UI
@@ -183,18 +177,30 @@ st.markdown("---")
 
 with st.expander("📋 Instructions", expanded=False):
     st.markdown("""
-    1. Export and upload HubSpot Deals Excel file (containing Associated Contact and Company)
-    2. Export and upload Deal Alignment Excel file (containing Domain-Name des Unternehmens)
-    3. Upload your New Leads file
-    4. Click Process to analyze the data
-    5. Download the filtered results
+    Required files from HubSpot:
+    1. Export "alle deals" list as XLSX
+       - Contains: Associated Contact and Company information
+    2. Export "Deal Alignment" list as XLSX
+       - Contains: Domain-Name des Unternehmens data
+    3. Your new leads file (XLSX) must contain:
+       - Vorname
+       - Nachname
+       - Email
+       - Unternehmen
+    
+    Steps:
+    1. Upload your HubSpot Deals XLSX
+    2. Upload Deal Alignment XLSX
+    3. Upload New Leads XLSX
+    4. Click Process to analyze
+    5. Download filtered results
     """)
 
 col1, col2, col3 = st.columns(3)
 
 with col1:
     st.subheader("1. HubSpot Deals")
-    deals_file = st.file_uploader("Upload HubSpot Deals export", type=['xlsx'])
+    deals_file = st.file_uploader("Upload HubSpot Deals export (XLSX)", type=['xlsx'])
     if deals_file:
         if is_file_empty(deals_file):
             st.error("The uploaded file is empty")
@@ -207,7 +213,7 @@ with col1:
 
 with col2:
     st.subheader("2. Deal Alignment")
-    alignment_file = st.file_uploader("Upload Deal Alignment export", type=['xlsx'])
+    alignment_file = st.file_uploader("Upload Deal Alignment export (XLSX)", type=['xlsx'])
     if alignment_file:
         if is_file_empty(alignment_file):
             st.error("The uploaded file is empty")
@@ -220,7 +226,7 @@ with col2:
 
 with col3:
     st.subheader("3. New Leads")
-    leads_file = st.file_uploader("Upload new leads file", type=['xlsx'])
+    leads_file = st.file_uploader("Upload new leads file (XLSX)", type=['xlsx'])
     if leads_file:
         if is_file_empty(leads_file):
             st.error("The uploaded file is empty")
@@ -233,7 +239,7 @@ with col3:
 
 if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file and leads_file)):
     with st.spinner("Processing leads..."):
-        new_leads_df, existing_leads_df, _ = check_leads(deals_df, alignment_df, leads_df)
+        new_leads_df, existing_leads_df = check_leads(deals_df, alignment_df, leads_df)
         
         tab1, tab2 = st.tabs(["✨ New Leads", "🔄 Existing Leads"])
         
