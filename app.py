@@ -89,16 +89,16 @@ def process_excel(uploaded_file):
     return None
 
 def clean_output_data(df):
-    """Clean and prepare output data focusing on relevant columns"""
+    """Clean and prepare output data"""
     if df.empty:
         return df
     
     primary_columns = [
         'Vorname', 'Nachname', 'E-Mail-Adresse', 'Firma/Organisation',
         'First Name', 'Last Name', 'Email', 'Company',
-        'Associated Contact', 'Associated Company',  # HubSpot specific columns
-        'Domain-Name des Unternehmens',  # Alignment check column
-        'Reason'  # Match reason
+        'Associated Contact', 'Associated Company',
+        'Domain-Name des Unternehmens',
+        'Reason'
     ]
     
     columns = [col for col in primary_columns if col in df.columns]
@@ -124,51 +124,60 @@ def save_to_excel(df, filename):
     return buffer.getvalue()
 
 def check_leads(deals_df, alignment_df, new_leads_df):
-    """Check leads against existing deals and alignments using specific columns"""
+    """Check leads against existing deals and alignments"""
     if deals_df is None or alignment_df is None or new_leads_df is None:
-        return None, None
+        return None, None, None
 
-    # Extract existing emails and domains from deals
     existing_emails = set()
     existing_contact_names = set()
     existing_companies = set()
+    company_domains = {}
 
     # Process deals data
     if 'Associated Contact' in deals_df.columns:
-        # Extract emails from Associated Contact field
         deals_df['Extracted Email'] = deals_df['Associated Contact'].apply(extract_email_from_text)
-        existing_emails.update(
-            deals_df['Extracted Email']
-            .dropna()
-            .apply(lambda x: x.lower().strip())
-        )
+        # Store base emails without domain extension
+        for email in deals_df['Extracted Email'].dropna():
+            email = email.lower().strip()
+            base_email = email[:email.rindex('.')] if '.' in email else email
+            existing_emails.add(base_email)
         
-        # Extract names from Associated Contact field
         existing_contact_names.update(
             deals_df['Associated Contact']
             .dropna()
             .apply(lambda x: str(x).lower().strip())
         )
 
-    # Get existing companies from deals
+    # Get existing companies and their domains
     if 'Associated Company' in deals_df.columns:
-        existing_companies.update(
-            deals_df['Associated Company']
-            .dropna()
-            .apply(normalize_company_name)
-        )
+        companies = deals_df['Associated Company'].dropna()
+        for company in companies:
+            norm_company = normalize_company_name(company)
+            existing_companies.add(norm_company)
+            
+            # Get email domains for this company
+            company_emails = deals_df[
+                deals_df['Associated Company'] == company
+            ]['Extracted Email'].dropna()
+            
+            for email in company_emails:
+                domain = extract_domain(email)
+                if domain:
+                    if norm_company not in company_domains:
+                        company_domains[norm_company] = set()
+                    company_domains[norm_company].add(domain)
 
     # Get domains from alignment check
     existing_domains = set()
     if 'Domain-Name des Unternehmens' in alignment_df.columns:
-        existing_domains.update(
-            alignment_df['Domain-Name des Unternehmens']
-            .dropna()
-            .apply(lambda x: extract_domain(str(x)))
-        )
+        for domain in alignment_df['Domain-Name des Unternehmens'].dropna():
+            domain = str(domain).lower().strip()
+            base_domain = domain[:domain.rindex('.')] if '.' in domain else domain
+            existing_domains.add(base_domain)
 
     new_leads = []
     existing_leads = []
+    double_check_leads = []
 
     total_leads = len(new_leads_df)
     progress_bar = st.progress(0)
@@ -177,7 +186,6 @@ def check_leads(deals_df, alignment_df, new_leads_df):
         progress = (idx + 1) / total_leads
         progress_bar.progress(progress)
         
-        # Get lead details
         lead_email = ''
         for email_col in ['E-Mail-Adresse', 'Email', 'E-Mail']:
             if email_col in lead and pd.notna(lead[email_col]):
@@ -198,50 +206,51 @@ def check_leads(deals_df, alignment_df, new_leads_df):
                 break
 
         match_found = False
+        double_check = False
         reasons = []
 
-        # Email check
+        # Email check with domain variation handling
         if lead_email:
-            if lead_email in existing_emails:
+            base_email = lead_email[:lead_email.rindex('.')] if '.' in lead_email else lead_email
+            if base_email in existing_emails:
                 match_found = True
-                reasons.append('Email exists in deals')
-            else:
-                lead_domain = extract_domain(lead_email)
-                if lead_domain and lead_domain in existing_domains:
-                    match_found = True
-                    reasons.append('Company domain exists in alignment check')
+                reasons.append('Email exists in deals (different domain)')
 
-        # Name check
-        if lead_name and lead_name in existing_contact_names:
-            match_found = True
-            reasons.append('Contact name exists in deals')
-
-        # Company check
+        # Company check with domain variations
         if lead_company and lead_company in existing_companies:
-            match_found = True
-            reasons.append('Company exists in deals')
-        elif lead_company:
-            # Check for similar company names
-            for existing_company in existing_companies:
-                if are_companies_similar(lead_company, existing_company, threshold=85):
+            if lead_email:
+                lead_domain = extract_domain(lead_email)
+                company_domain_variations = company_domains.get(lead_company, set())
+                
+                if lead_domain in company_domain_variations:
                     match_found = True
-                    reasons.append(f'Similar company exists: {existing_company}')
-                    break
+                    reasons.append('Contact from existing company')
+                else:
+                    double_check = True
+                    reasons.append('New contact in existing company - requires review')
+            else:
+                double_check = True
+                reasons.append('Company exists - requires review')
 
+        # Add to appropriate list
         lead_dict = lead.to_dict()
+        lead_dict['Reason'] = ' & '.join(reasons)
+        
         if match_found:
-            lead_dict['Reason'] = ' & '.join(reasons)
             existing_leads.append(lead_dict)
+        elif double_check:
+            double_check_leads.append(lead_dict)
         else:
             new_leads.append(lead_dict)
 
     progress_bar.empty()
 
-    # Create DataFrames from results
+    # Create DataFrames
     new_leads_df = pd.DataFrame(new_leads) if new_leads else pd.DataFrame()
     existing_leads_df = pd.DataFrame(existing_leads) if existing_leads else pd.DataFrame()
+    double_check_df = pd.DataFrame(double_check_leads) if double_check_leads else pd.DataFrame()
 
-    return new_leads_df, existing_leads_df
+    return new_leads_df, existing_leads_df, double_check_df
 
 # Streamlit UI
 st.title("HubSpot Leads Checker")
@@ -299,9 +308,9 @@ with col3:
 
 if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file and leads_file)):
     with st.spinner("Processing leads..."):
-        new_leads_df, existing_leads_df = check_leads(deals_df, alignment_df, leads_df)
+        new_leads_df, existing_leads_df, double_check_df = check_leads(deals_df, alignment_df, leads_df)
         
-        tab1, tab2 = st.tabs(["✨ New Leads", "🔄 Existing Leads"])
+        tab1, tab2, tab3 = st.tabs(["✨ New Leads", "🔄 Existing Leads", "⚠️ Double Check"])
         
         with tab1:
             st.subheader(f"New Leads ({len(new_leads_df)})")
@@ -332,6 +341,22 @@ if st.button("🚀 Process Files", disabled=not (deals_file and alignment_file a
                     label="📥 Download Existing Leads Excel",
                     data=excel_data,
                     file_name=f"existing_leads_{timestamp}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+        with tab3:
+            st.subheader(f"Double Check Required ({len(double_check_df)})")
+            if not double_check_df.empty:
+                display_df = clean_output_data(double_check_df)
+                st.dataframe(display_df)
+                
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                excel_data = save_to_excel(display_df, f"double_check_leads_{timestamp}.xlsx")
+                
+                st.download_button(
+                    label="📥 Download Double Check Leads Excel",
+                    data=excel_data,
+                    file_name=f"double_check_leads_{timestamp}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
