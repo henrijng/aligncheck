@@ -13,6 +13,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+def fix_string_encoding(s):
+    """Fix potential encoding issues in string"""
+    if isinstance(s, str):
+        try:
+            return s.encode('latin1').decode('utf-8')
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return s
+    return s
+
 # Debug helper
 def peek_file(file):
     """Debug helper to peek at file contents"""
@@ -22,7 +31,13 @@ def peek_file(file):
         file.seek(pos)
         return content
     except:
-        return "Could not read file content"
+        try:
+            file.seek(pos)
+            content = file.read(1000).decode('cp1252')
+            file.seek(pos)
+            return content
+        except:
+            return "Could not read file content"
 
 def is_file_empty(file):
     """Check if the uploaded file is empty"""
@@ -68,32 +83,36 @@ def fix_column_names(df):
     """Clean and standardize column names from HubSpot export"""
     if df is None:
         return None
-    # Remove any BOM characters and clean column names
-    df.columns = df.columns.str.replace('\ufeff', '')
-    df.columns = df.columns.str.strip()
-    # Remove quotes from column names if they exist
-    df.columns = df.columns.str.replace('"', '')
+    
+    # Handle both series and list of column names
+    if isinstance(df.columns, pd.Index):
+        columns = df.columns.tolist()
+    else:
+        columns = list(df.columns)
+    
+    # Clean each column name
+    clean_columns = []
+    for col in columns:
+        col = str(col).replace('\ufeff', '')  # Remove BOM
+        col = col.strip('"').strip("'")  # Remove quotes
+        col = col.strip()  # Remove whitespace
+        col = fix_string_encoding(col)  # Fix encoding
+        clean_columns.append(col)
+    
+    df.columns = clean_columns
     return df
 
 def process_csv(uploaded_file):
     """Process uploaded CSV with HubSpot format handling"""
     if uploaded_file is not None:
         try:
-            # First attempt: comma delimiter with minimal options
-            df = pd.read_csv(
-                uploaded_file,
-                encoding='utf-8',
-                dtype=str,
-                on_bad_lines='skip'
-            )
-            df = fix_column_names(df)
-            if len(df.columns) <= 1:  # If we only got one column, try semicolon
-                raise pd.errors.EmptyDataError
-            return df
-        except (pd.errors.EmptyDataError, UnicodeDecodeError):
-            try:
-                # Second attempt: semicolon delimiter
-                uploaded_file.seek(0)  # Reset file pointer
+            # Read the first line to check the format
+            uploaded_file.seek(0)
+            first_line = uploaded_file.readline().decode('utf-8')
+            uploaded_file.seek(0)
+
+            # Check if it's the special format with comma-separated columns in a single column
+            if '"' in first_line and ',' in first_line and ';' in first_line:
                 df = pd.read_csv(
                     uploaded_file,
                     sep=';',
@@ -101,26 +120,48 @@ def process_csv(uploaded_file):
                     dtype=str,
                     on_bad_lines='skip'
                 )
+                # If we got a single column with comma-separated values
+                if len(df.columns) == 1:
+                    # Split the column name into separate columns
+                    column_names = df.columns[0].split(',')
+                    column_names = [col.strip('"').strip() for col in column_names]
+                    # Create new DataFrame with the correct columns
+                    new_df = pd.DataFrame(columns=column_names)
+                    # Add the data
+                    if len(df) > 0:
+                        for idx, row in df.iterrows():
+                            values = row[0].split(',')
+                            values = [v.strip('"').strip() for v in values]
+                            if len(values) == len(column_names):
+                                new_df.loc[idx] = values
+                    df = new_df
+            else:
+                # Regular CSV processing
+                df = pd.read_csv(
+                    uploaded_file,
+                    encoding='utf-8',
+                    dtype=str,
+                    on_bad_lines='skip'
+                )
+
+            df = fix_column_names(df)
+            return df
+
+        except UnicodeDecodeError:
+            try:
+                uploaded_file.seek(0)
+                df = pd.read_csv(
+                    uploaded_file,
+                    sep=';',
+                    encoding='cp1252',
+                    dtype=str,
+                    on_bad_lines='skip'
+                )
                 df = fix_column_names(df)
-                if len(df.columns) <= 1:  # If still only one column, try different encoding
-                    raise UnicodeDecodeError
                 return df
-            except (UnicodeDecodeError, pd.errors.ParserError):
-                try:
-                    # Final attempt: CP1252 encoding with semicolon
-                    uploaded_file.seek(0)  # Reset file pointer
-                    df = pd.read_csv(
-                        uploaded_file,
-                        sep=';',
-                        encoding='cp1252',
-                        dtype=str,
-                        on_bad_lines='skip'
-                    )
-                    df = fix_column_names(df)
-                    return df
-                except Exception as e:
-                    st.error("Error reading file: The file format is not as expected. Please ensure it's a valid HubSpot export.")
-                    return None
+            except Exception as e:
+                st.error(f"Error reading file: The file format is not as expected. Please ensure it's a valid HubSpot export.")
+                return None
     return None
 
 def check_leads(deals_df, alignment_df, new_leads_df):
@@ -180,19 +221,16 @@ def check_leads(deals_df, alignment_df, new_leads_df):
         match_found = False
         reason = []
 
-        # Check exact email match
         if email in existing_emails:
             match_found = True
             reason.append('Email exists in deals')
 
-        # Check domain match if email wasn't found
         if not match_found and email:
             lead_domain = extract_domain(email)
             if lead_domain and lead_domain in existing_domains:
                 match_found = True
                 reason.append('Company domain exists')
 
-        # Check company name match if no other match found
         if not match_found and company:
             for existing_company in existing_companies:
                 if are_companies_similar(company, existing_company):
@@ -236,7 +274,6 @@ with col1:
         if is_file_empty(deals_file):
             st.error("The uploaded file is empty")
         else:
-            # Add debug information in expander
             with st.expander("Debug Info", expanded=False):
                 st.text("File Preview:")
                 st.code(peek_file(deals_file))
@@ -254,7 +291,6 @@ with col2:
         if is_file_empty(alignment_file):
             st.error("The uploaded file is empty")
         else:
-            # Add debug information in expander
             with st.expander("Debug Info", expanded=False):
                 st.text("File Preview:")
                 st.code(peek_file(alignment_file))
@@ -272,7 +308,6 @@ with col3:
         if is_file_empty(leads_file):
             st.error("The uploaded file is empty")
         else:
-            # Add debug information in expander
             with st.expander("Debug Info", expanded=False):
                 st.text("File Preview:")
                 st.code(peek_file(leads_file))
